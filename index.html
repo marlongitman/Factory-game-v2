@@ -1,158 +1,799 @@
-<!DOCTYPE html>
-<html lang="de">
-<head>
-  <meta charset="UTF-8">
-  <title>Fabrik Simulation - Kupfer-Fix</title>
-  <style>
-    body { font-family: sans-serif; background: #1e1e24; color: #fff; margin: 20px; }
-    #grid { display: grid; grid-template-columns: repeat(8, 60px); gap: 4px; margin-bottom: 20px; }
-    .cell { width: 60px; height: 60px; background: #2a2a32; border: 1px solid #444; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 10px; text-align: center; cursor: pointer; user-select: none; }
-    .cell.ore { background: #8c4a27; }
-    .cell.building { background: #3a5a80; }
-    .controls { margin-bottom: 15px; }
-    button { padding: 8px 12px; margin-right: 5px; background: #444; color: white; border: none; cursor: pointer; }
-    button.active { background: #007acc; }
-    #log { background: #111; padding: 10px; height: 120px; overflow-y: auto; font-family: monospace; font-size: 12px; border: 1px solid #333; }
-  </style>
-</head>
-<body>
+3: Komplexe Schaltungen', goalItem: 'circuit', goalQty: 15 },
+            { title: 'Tier 4: Schwere Industrie', goalItem: 'frame', goalQty: 10 },
+            { title: 'Endlos-Meilenstein: Quantenzeitalter', goalItem: 'quantum_chip', goalQty: 50 }
+        ];
 
-  <h1>Fabrik-Automatisierung</h1>
-  <div class="controls">
-    <button onclick="selectTool('mine')">Erzmine platzieren</button>
-    <button onclick="selectTool('schmelze')">Schmelze platzieren (Barren)</button>
-    <button onclick="selectTool('fabrik')">Fabrik platzieren (Wire)</button>
-    <button onclick="selectTool('clear')">Abreißen</button>
-  </div>
-
-  <div id="grid"></div>
-  <h3>System-Log / Inventar</h3>
-  <div id="log"></div>
-
-  <script>
-    const GRID_SIZE = 8;
-    let selectedTool = 'mine';
-    const gridData = [];
-
-    const RECIPES = {
-      kupferbarren: { name: 'Kupferbarren', input: 'kupfererz', inputQty: 1, output: 'kupferbarren', outputQty: 1, time: 2000 },
-      kupferwire: { name: 'Kupferwire', input: 'kupferbarren', inputQty: 1, output: 'kupferwire', outputQty: 2, time: 1500 }
-    };
-
-    // Grid initialisieren
-    const gridEl = document.getElementById('grid');
-    for (let r = 0; r < GRID_SIZE; r++) {
-      for (let c = 0; c < GRID_SIZE; c++) {
-        const isOreNode = (r === 1 && c === 1); // Erzfeld bei (1,1)
-        const cellData = {
-          r, c,
-          type: isOreNode ? 'ore' : 'empty',
-          building: null,
-          inputBuffer: {},
-          outputBuffer: {},
-          progress: 0,
-          isCrafting: false
+        let gameState = {
+            currentLevel: 1,
+            nodes: [],
+            connections: [],
+            itemsInTransit: [],
+            globalInventory: { iron_ore: 0, copper_ore: 0, coal: 0, iron_ingot: 0, copper_ingot: 0, wire: 0, circuit: 0, frame: 0, quantum_chip: 0 },
+            currentTierIdx: 0,
+            selectedTool: null,
+            connectSourceNodeId: null,
+            inspectingNodeId: null
         };
-        gridData.push(cellData);
 
-        const div = document.createElement('div');
-        div.className = 'cell' + (isOreNode ? ' ore' : '');
-        div.dataset.index = gridData.length - 1;
-        div.onclick = () => handleCellClick(cellData, div);
-        gridEl.appendChild(div);
-      }
-    }
+        let nodeCounter = 1;
+        let connectionCounter = 1;
 
-    function selectTool(tool) {
-      selectedTool = tool;
-    }
+        // Audio Effects Synthesizer
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        let audioCtx = null;
 
-    function handleCellClick(cell, el) {
-      if (selectedTool === 'clear') {
-        cell.building = null;
-        cell.inputBuffer = {};
-        cell.outputBuffer = {};
-        cell.isCrafting = false;
-      } else if (selectedTool === 'mine' && cell.type === 'ore') {
-        cell.building = 'mine';
-      } else if (selectedTool === 'schmelze' && cell.type === 'empty') {
-        cell.building = 'schmelze';
-      } else if (selectedTool === 'fabrik' && cell.type === 'empty') {
-        cell.building = 'fabrik';
-      }
-      render();
-    }
-
-    // Simulations-Loop (alle 100ms)
-    setInterval(() => {
-      let logText = "";
-
-      gridData.forEach((cell, idx) => {
-        if (!cell.building) return;
-
-        // 1. Mine produziert Erz
-        if (cell.building === 'mine') {
-          cell.progress += 100;
-          if (cell.progress >= 1000) {
-            cell.outputBuffer['kupfererz'] = (cell.outputBuffer['kupfererz'] || 0) + 1;
-            cell.progress = 0;
-          }
+        function playTone(freq = 440, type = 'sine', duration = 0.1) {
+            try {
+                if (!audioCtx) audioCtx = new AudioCtx();
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = type;
+                osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+                gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start();
+                osc.stop(audioCtx.currentTime + duration);
+            } catch(e) {}
         }
 
-        // 2. Automatischer Transport zum nächsten Feld (rechts)
-        const nextCell = gridData[idx + 1];
-        if (nextCell && nextCell.building) {
-          for (let item in cell.outputBuffer) {
-            if (cell.outputBuffer[item] > 0) {
-              cell.outputBuffer[item]--;
-              nextCell.inputBuffer[item] = (nextCell.inputBuffer[item] || 0) + 1;
+        window.onload = function() {
+            initPalette();
+            renderGlobalInventory();
+            updateQuestUI();
+            setupWindowDragging('inspector-window', 'inspector-header');
+            setupWindowDragging('lexikon-window', 'lexikon-header');
+
+            // Place initial Central Hub snapped to grid
+            const GRID_SIZE = 64;
+            const startGridX = 5 * GRID_SIZE + (GRID_SIZE - 56) / 2; // 324
+            const startGridY = 3 * GRID_SIZE + (GRID_SIZE - 56) / 2; // 196
+            createNode('hub', startGridX, startGridY, 1);
+
+            // Game Loop Counters
+            setInterval(gameLoop, 1000);
+            setInterval(processTransport, 100);
+            requestAnimationFrame(animationLoop);
+        };
+
+        function showNotification(msg, title = 'Benachrichtigung', icon = 'ℹ️') {
+            document.getElementById('notify-title').innerText = title;
+            document.getElementById('notify-message').innerText = msg;
+            document.getElementById('notify-icon').innerText = icon;
+            document.getElementById('notification-modal').classList.remove('hidden');
+        }
+
+        function closeNotification() {
+            document.getElementById('notification-modal').classList.add('hidden');
+        }
+
+        function initPalette() {
+            const container = document.getElementById('building-palette');
+            container.innerHTML = '';
+
+            Object.keys(BUILDINGS).forEach(key => {
+                if (key === 'hub') return;
+                const b = BUILDINGS[key];
+
+                const btn = document.createElement('button');
+                btn.id = `palette-btn-${key}`;
+                btn.onclick = () => selectTool(key);
+                btn.className = "apple-btn p-2.5 rounded-xl border border-white/10 bg-neutral-800 text-xs font-medium text-left flex flex-col gap-1 hover:border-white/30";
+                btn.innerHTML = `
+                    <span class="text-base">${b.icon}</span>
+                    <span class="truncate">${b.name}</span>
+                `;
+                container.appendChild(btn);
+            });
+        }
+
+        document.getElementById('factory-viewport').addEventListener('click', function(e) {
+            if (e.target.closest('.building-node') || e.target.closest('#inspector-window') || e.target.closest('#lexikon-window') || e.target.closest('#notification-modal')) return;
+            
+            const rect = this.getBoundingClientRect();
+            const GRID_SIZE = 64;
+            const rawX = e.clientX - rect.left;
+            const rawY = e.clientY - rect.top;
+            
+            // Grid cell snap
+            const gridX = Math.floor(rawX / GRID_SIZE) * GRID_SIZE + (GRID_SIZE - 56) / 2;
+            const gridY = Math.floor(rawY / GRID_SIZE) * GRID_SIZE + (GRID_SIZE - 56) / 2;
+
+            if (gameState.selectedTool && BUILDINGS[gameState.selectedTool]) {
+                createNode(gameState.selectedTool, gridX, gridY, gameState.currentLevel);
+                playTone(600, 'triangle', 0.08);
             }
-          }
+        });
+
+        function createNode(typeKey, x, y, level) {
+            const bConfig = BUILDINGS[typeKey];
+            const defaultRecipe = bConfig.allowedRecipes ? bConfig.allowedRecipes[0] : null;
+
+            const node = {
+                id: nodeCounter++,
+                type: typeKey,
+                x: x,
+                y: y,
+                level: level,
+                recipe: defaultRecipe,
+                buffer: {},
+                outputBuffer: {},
+                progress: 0
+            };
+
+            gameState.nodes.push(node);
+            renderNodesAndConnections();
         }
 
-        // 3. Verarbeitung in Schmelze / Fabrik
-        let recipe = null;
-        if (cell.building === 'schmelze') recipe = RECIPES.kupferbarren;
-        if (cell.building === 'fabrik') recipe = RECIPES.kupferwire;
-
-        if (recipe) {
-          if (!cell.isCrafting && (cell.inputBuffer[recipe.input] || 0) >= recipe.inputQty) {
-            cell.inputBuffer[recipe.input] -= recipe.inputQty;
-            cell.isCrafting = true;
-            cell.progress = 0;
-          }
-
-          if (cell.isCrafting) {
-            cell.progress += 100;
-            if (cell.progress >= recipe.time) {
-              cell.outputBuffer[recipe.output] = (cell.outputBuffer[recipe.output] || 0) + recipe.outputQty;
-              cell.isCrafting = false;
-              cell.progress = 0;
+        function selectTool(toolKey) {
+            playTone(440, 'sine', 0.05);
+            
+            // Toggle off tool if already selected
+            if (gameState.selectedTool === toolKey) {
+                gameState.selectedTool = null;
+            } else {
+                gameState.selectedTool = toolKey;
             }
-          }
+            
+            gameState.connectSourceNodeId = null;
+
+            document.querySelectorAll('#building-palette button, #tool-connect, #tool-connect-mk2, #tool-delete').forEach(el => {
+                el.classList.remove('border-white', 'bg-neutral-700', 'border-cyan-400');
+            });
+
+            const hint = document.getElementById('tool-status-hint');
+
+            if (!gameState.selectedTool) {
+                hint.innerText = 'Wähle ein Gebäude, ziehe Gebäude um oder verbinde sie.';
+                return;
+            }
+
+            if (toolKey === 'connect') {
+                document.getElementById('tool-connect').classList.add('border-white', 'bg-neutral-700');
+                hint.innerText = '🔗 MK1 Förderband: Klicke auf Start- und Zielgebäude.';
+            } else if (toolKey === 'connect_mk2') {
+                document.getElementById('tool-connect-mk2').classList.add('border-cyan-400', 'bg-neutral-700');
+                hint.innerText = '⚡ MK2 Highspeed-Band (2x Eisenbarren/Feld): Klicke auf Start- und Zielgebäude.';
+            } else if (toolKey === 'delete') {
+                document.getElementById('tool-delete').classList.add('border-white', 'bg-neutral-700');
+                hint.innerText = '✕ Klicke auf ein Gebäude oder eine Linie zum Entfernen.';
+            } else if (BUILDINGS[toolKey]) {
+                const btn = document.getElementById(`palette-btn-${toolKey}`);
+                if (btn) btn.classList.add('border-white', 'bg-neutral-700');
+                hint.innerText = `🏗️ Klicke auf das Rasterfeld, um [${BUILDINGS[toolKey].name}] zu platzieren.`;
+            }
         }
 
-        // Status im Log anzeigen
-        logText += `[Cell ${cell.r},${cell.c} - ${cell.building.toUpperCase()}] In: ${JSON.stringify(cell.inputBuffer)} | Out: ${JSON.stringify(cell.outputBuffer)}<br>`;
-      });
+        function startNodeDrag(nodeId, e) {
+            if (e.button !== 0) return; // Only primary mouse button
+            e.stopPropagation();
 
-      document.getElementById('log').innerHTML = logText || "Keine aktiven Gebäude.";
-      render();
-    }, 100);
+            // Direct actions for specific tool modes
+            if (gameState.selectedTool === 'delete') {
+                deleteNode(nodeId);
+                return;
+            }
 
-    function render() {
-      const cells = document.querySelectorAll('.cell');
-      gridData.forEach((data, i) => {
-        const el = cells[i];
-        if (data.type === 'ore' && !data.building) {
-          el.innerText = "Kupfer-Erzfeld";
-        } else if (data.building) {
-          el.innerText = `${data.building.toUpperCase()}\nIn:${Object.values(data.inputBuffer).reduce((a,b)=>a+b,0)}\nOut:${Object.values(data.outputBuffer).reduce((a,b)=>a+b,0)}`;
-        } else {
-          el.innerText = "";
+            if (gameState.selectedTool === 'connect' || gameState.selectedTool === 'connect_mk2') {
+                handleNodeClick(nodeId, e);
+                return;
+            }
+
+            const node = gameState.nodes.find(n => n.id === nodeId);
+            if (!node) return;
+
+            const viewport = document.getElementById('factory-viewport');
+            const rect = viewport.getBoundingClientRect();
+
+            const startX = e.clientX;
+            const startY = e.clientY;
+            const initialX = node.x;
+            const initialY = node.y;
+            let isDragging = false;
+
+            const nodeEl = document.getElementById(`building-node-${nodeId}`);
+
+            function onPointerMove(moveEvent) {
+                const dx = moveEvent.clientX - startX;
+                const dy = moveEvent.clientY - startY;
+
+                if (!isDragging && Math.hypot(dx, dy) > 4) {
+                    isDragging = true;
+                    if (nodeEl) nodeEl.classList.add('dragging-node');
+                }
+
+                if (isDragging) {
+                    const GRID_SIZE = 64;
+                    const rawTargetX = initialX + dx;
+                    const rawTargetY = initialY + dy;
+
+                    // Snap to nearest grid center offset
+                    const snappedX = Math.floor((rawTargetX + 28) / GRID_SIZE) * GRID_SIZE + (GRID_SIZE - 56) / 2;
+                    const snappedY = Math.floor((rawTargetY + 28) / GRID_SIZE) * GRID_SIZE + (GRID_SIZE - 56) / 2;
+
+                    const maxX = Math.floor((rect.width - 20) / GRID_SIZE) * GRID_SIZE + (GRID_SIZE - 56) / 2;
+                    const maxY = Math.floor((rect.height - 20) / GRID_SIZE) * GRID_SIZE + (GRID_SIZE - 56) / 2;
+
+                    node.x = Math.max((GRID_SIZE - 56) / 2, Math.min(maxX, snappedX));
+                    node.y = Math.max((GRID_SIZE - 56) / 2, Math.min(maxY, snappedY));
+
+                    // Re-render instantly to dynamically update conveyor belts
+                    renderNodesAndConnections();
+                }
+            }
+
+            function onPointerUp(upEvent) {
+                window.removeEventListener('pointermove', onPointerMove);
+                window.removeEventListener('pointerup', onPointerUp);
+
+                if (nodeEl) nodeEl.classList.remove('dragging-node');
+
+                if (isDragging) {
+                    playTone(550, 'sine', 0.05);
+                    if (gameState.inspectingNodeId === nodeId) {
+                        updateInspectorContent();
+                    }
+                } else {
+                    handleNodeClick(nodeId, upEvent);
+                }
+            }
+
+            window.addEventListener('pointermove', onPointerMove);
+            window.addEventListener('pointerup', onPointerUp);
         }
-      });
-    }
-  </script>
+
+        function handleNodeClick(nodeId, event) {
+            if (event) event.stopPropagation();
+
+            if (gameState.selectedTool === 'connect' || gameState.selectedTool === 'connect_mk2') {
+                const isMK2 = gameState.selectedTool === 'connect_mk2';
+
+                if (!gameState.connectSourceNodeId) {
+                    gameState.connectSourceNodeId = nodeId;
+                    playTone(350, 'sine', 0.05);
+                    document.getElementById('tool-status-hint').innerText = isMK2 
+                        ? '👉 MK2: Klicke nun auf das Ziel-Gebäude.' 
+                        : '👉 MK1: Klicke nun auf das Ziel-Gebäude.';
+                    renderNodesAndConnections();
+                } else {
+                    if (gameState.connectSourceNodeId !== nodeId) {
+                        createConnection(gameState.connectSourceNodeId, nodeId, isMK2 ? 2 : 1);
+                    }
+                    gameState.connectSourceNodeId = null;
+                }
+                return;
+            }
+
+            openInspector(nodeId);
+        }
+
+        function createConnection(fromId, toId, mkTier = 1) {
+            const exists = gameState.connections.some(c => c.from === fromId && c.to === toId);
+            if (exists) return;
+
+            const fromNode = gameState.nodes.find(n => n.id === fromId);
+            const toNode = gameState.nodes.find(n => n.id === toId);
+
+            const dx = Math.abs(fromNode.x - toNode.x);
+            const dy = Math.abs(fromNode.y - toNode.y);
+            const gridDistance = Math.max(1, Math.round(Math.sqrt(dx * dx + dy * dy) / 64));
+
+            if (mkTier === 2) {
+                const totalCost = gridDistance * 2;
+                const currentIngots = gameState.globalInventory.iron_ingot || 0;
+
+                if (currentIngots < totalCost) {
+                    playTone(180, 'sawtooth', 0.2);
+                    showNotification(`Zu wenig Eisenbarren im Hub! MK2-Verbindung über ${gridDistance} Felder kostet ${totalCost}x Eisenbarren (Vorhanden: ${currentIngots}).`, 'Ressourcen fehlen', '🧱');
+                    return;
+                }
+
+                gameState.globalInventory.iron_ingot -= totalCost;
+                renderGlobalInventory();
+                playTone(800, 'sine', 0.15);
+            } else {
+                playTone(700, 'sine', 0.1);
+            }
+
+            gameState.connections.push({
+                id: connectionCounter++,
+                from: fromId,
+                to: toId,
+                levelFrom: fromNode.level,
+                levelTo: toNode.level,
+                mkTier: mkTier
+            });
+
+            renderNodesAndConnections();
+        }
+
+        function deleteNode(nodeId) {
+            playTone(200, 'sawtooth', 0.1);
+            gameState.nodes = gameState.nodes.filter(n => n.id !== nodeId);
+            gameState.connections = gameState.connections.filter(c => c.from !== nodeId && c.to !== nodeId);
+            if (gameState.inspectingNodeId === nodeId) closeInspector();
+            renderNodesAndConnections();
+        }
+
+        function deleteConnection(connId) {
+            playTone(200, 'sawtooth', 0.1);
+            gameState.connections = gameState.connections.filter(c => c.id !== connId);
+            renderNodesAndConnections();
+        }
+
+        function renderNodesAndConnections() {
+            const container = document.getElementById('nodes-container');
+            const svg = document.getElementById('svg-layer');
+
+            container.innerHTML = '';
+            svg.innerHTML = '';
+
+            const activeLevelNodes = gameState.nodes.filter(n => n.level === gameState.currentLevel);
+
+            // Render Conveyor Lines
+            gameState.connections.forEach(conn => {
+                const fromNode = gameState.nodes.find(n => n.id === conn.from);
+                const toNode = gameState.nodes.find(n => n.id === conn.to);
+
+                if (fromNode.level === gameState.currentLevel || toNode.level === gameState.currentLevel) {
+                    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+                    line.setAttribute("x1", fromNode.x + 28);
+                    line.setAttribute("y1", fromNode.y + 28);
+                    line.setAttribute("x2", toNode.x + 28);
+                    line.setAttribute("y2", toNode.y + 28);
+                    
+                    const isMK2 = conn.mkTier === 2;
+                    line.setAttribute("class", `${isMK2 ? 'conveyor-line-mk2' : 'conveyor-line'} cursor-pointer pointer-events-auto`);
+                    line.onclick = (e) => {
+                        e.stopPropagation();
+                        if (gameState.selectedTool === 'delete') deleteConnection(conn.id);
+                    };
+                    svg.appendChild(line);
+                }
+            });
+
+            // Render Node Elements with Drag Listeners
+            activeLevelNodes.forEach(node => {
+                const bConfig = BUILDINGS[node.type];
+                const el = document.createElement('div');
+                el.id = `building-node-${node.id}`;
+                el.className = `building-node absolute w-14 h-14 rounded-2xl bg-neutral-900 border ${gameState.connectSourceNodeId === node.id ? 'border-blue-500 ring-2 ring-blue-500/50' : 'border-white/20'} flex items-center justify-center cursor-grab active:cursor-grabbing shadow-lg hover:border-white transition-all z-20 group`;
+                el.style.left = `${node.x}px`;
+                el.style.top = `${node.y}px`;
+
+                // Attach pointerdown drag handler
+                el.onpointerdown = (e) => startNodeDrag(node.id, e);
+
+                let rateText = '30/Min';
+                if (bConfig.type === 'crafter' && node.recipe) {
+                    const rec = RECIPES[node.recipe];
+                    if (rec) {
+                        const r = Math.round((60 / rec.time) * (rec.outputQty || 1));
+                        rateText = `${r}/Min`;
+                    }
+                }
+
+                el.innerHTML = `
+                    <svg class="ring-svg absolute -top-[8px] -left-[8px] w-[72px] h-[72px] pointer-events-none" viewBox="0 0 72 72">
+                        <!-- Outer Fill Ring (Green) -->
+                        <circle class="ring-bg" cx="36" cy="36" r="32" fill="none" stroke-width="3"></circle>
+                        <circle id="node-outer-ring-${node.id}" class="ring-progress-outer" cx="36" cy="36" r="32" fill="none" stroke-width="3" stroke-dasharray="201.06" stroke-dashoffset="201.06"></circle>
+
+                        <!-- Inner Crafting Ring (Blue) -->
+                        <circle class="ring-bg" cx="36" cy="36" r="24" fill="none" stroke-width="2.5"></circle>
+                        <circle id="node-inner-ring-${node.id}" class="ring-progress-inner" cx="36" cy="36" r="24" fill="none" stroke-width="2.5" stroke-dasharray="150.80" stroke-dashoffset="150.80"></circle>
+                    </svg>
+
+                    <span class="text-2xl z-10 pointer-events-none">${bConfig.icon}</span>
+
+                    <div class="absolute -top-3 right-0 text-[9px] font-mono font-bold text-blue-400 bg-black/90 px-1 rounded border border-blue-500/30 pointer-events-none">
+                        ${rateText}
+                    </div>
+
+                    <div class="absolute -bottom-5 text-[9px] font-mono text-gray-300 bg-black/80 px-1.5 rounded border border-white/10 whitespace-nowrap pointer-events-none">
+                        ${bConfig.name}
+                    </div>
+                `;
+
+                container.appendChild(el);
+            });
+        }
+
+        function gameLoop() {
+            gameState.nodes.forEach(node => {
+                const bConfig = BUILDINGS[node.type];
+
+                if (bConfig.type === 'mine') {
+                    node.progress += 0.2;
+                    if (node.progress >= 1) {
+                        node.progress = 0;
+                        pushOutputItem(node, bConfig.res);
+                    }
+                } else if (bConfig.type === 'crafter' && node.recipe) {
+                    const recipe = RECIPES[node.recipe];
+                    if (recipe) {
+                        const hasInputs = Object.keys(recipe.inputs).every(reqItem => {
+                            return (node.buffer[reqItem] || 0) >= recipe.inputs[reqItem];
+                        });
+
+                        if (hasInputs) {
+                            node.progress += (0.2 / recipe.time);
+                            if (node.progress >= 1) {
+                                node.progress = 0;
+                                Object.keys(recipe.inputs).forEach(reqItem => {
+                                    node.buffer[reqItem] -= recipe.inputs[reqItem];
+                                });
+                                pushOutputItem(node, node.recipe, recipe.outputQty || 1);
+                            }
+                        }
+                    }
+                }
+            });
+
+            if (gameState.inspectingNodeId) {
+                updateInspectorContent();
+            }
+        }
+
+        function pushOutputItem(node, itemKey, count = 1) {
+            const outgoingConns = gameState.connections.filter(c => c.from === node.id);
+            if (outgoingConns.length > 0) {
+                const targetConn = outgoingConns[Math.floor(Math.random() * outgoingConns.length)];
+                gameState.itemsInTransit.push({
+                    id: Math.random(),
+                    connId: targetConn.id,
+                    itemKey: itemKey,
+                    count: count,
+                    progress: 0,
+                    speed: targetConn.mkTier === 2 ? 0.20 : 0.08
+                });
+            } else {
+                node.outputBuffer[itemKey] = (node.outputBuffer[itemKey] || 0) + count;
+            }
+        }
+
+        function processTransport() {
+            for (let i = gameState.itemsInTransit.length - 1; i >= 0; i--) {
+                const item = gameState.itemsInTransit[i];
+                item.progress += (item.speed || 0.08);
+
+                if (item.progress >= 1) {
+                    const conn = gameState.connections.find(c => c.id === item.connId);
+                    if (conn) {
+                        const targetNode = gameState.nodes.find(n => n.id === conn.to);
+                        if (targetNode) {
+                            if (targetNode.type === 'hub') {
+                                gameState.globalInventory[item.itemKey] = (gameState.globalInventory[item.itemKey] || 0) + item.count;
+                                renderGlobalInventory();
+                                checkQuestGoal();
+                            } else {
+                                targetNode.buffer[item.itemKey] = (targetNode.buffer[item.itemKey] || 0) + item.count;
+                            }
+                        }
+                    }
+                    gameState.itemsInTransit.splice(i, 1);
+                }
+            }
+        }
+
+        function animationLoop() {
+            const svg = document.getElementById('svg-layer');
+            document.querySelectorAll('.transit-dot').forEach(el => el.remove());
+
+            const OUTER_CIRCUMFERENCE = 201.06;
+            const INNER_CIRCUMFERENCE = 150.80;
+
+            gameState.nodes.forEach(node => {
+                const bConfig = BUILDINGS[node.type];
+
+                // Outer Ring: Buffer fill level
+                const outerRingEl = document.getElementById(`node-outer-ring-${node.id}`);
+                if (outerRingEl) {
+                    let fillRatio = 0;
+                    if (bConfig.type === 'mine') {
+                        fillRatio = 1.0;
+                    } else if (bConfig.type === 'crafter') {
+                        const totalBuf = Object.values(node.buffer).reduce((a, b) => a + b, 0);
+                        fillRatio = Math.min(1.0, totalBuf / 10);
+                    }
+                    outerRingEl.style.strokeDashoffset = OUTER_CIRCUMFERENCE - (OUTER_CIRCUMFERENCE * fillRatio);
+                }
+
+                // Inner Ring: Production progress
+                const innerRingEl = document.getElementById(`node-inner-ring-${node.id}`);
+                if (innerRingEl) {
+                    innerRingEl.style.strokeDashoffset = INNER_CIRCUMFERENCE - (INNER_CIRCUMFERENCE * (node.progress || 0));
+                }
+            });
+
+            // Animate items on conveyor belts dynamically following updated node positions
+            gameState.itemsInTransit.forEach(item => {
+                const conn = gameState.connections.find(c => c.id === item.connId);
+                if (!conn) return;
+
+                const fromNode = gameState.nodes.find(n => n.id === conn.from);
+                const toNode = gameState.nodes.find(n => n.id === conn.to);
+
+                if (fromNode && toNode && (fromNode.level === gameState.currentLevel || toNode.level === gameState.currentLevel)) {
+                    const x = fromNode.x + 28 + (toNode.x - fromNode.x) * item.progress;
+                    const y = fromNode.y + 28 + (toNode.y - fromNode.y) * item.progress;
+
+                    const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                    dot.setAttribute("cx", x);
+                    dot.setAttribute("cy", y);
+                    dot.setAttribute("r", "5");
+                    dot.setAttribute("fill", conn.mkTier === 2 ? "#38bdf8" : "#ffffff");
+                    dot.setAttribute("class", "transit-dot pointer-events-none");
+                    svg.appendChild(dot);
+                }
+            });
+
+            requestAnimationFrame(animationLoop);
+        }
+
+        function renderGlobalInventory() {
+            const list = document.getElementById('global-inventory-list');
+            list.innerHTML = '';
+
+            Object.keys(ITEMS).forEach(key => {
+                const item = ITEMS[key];
+                const count = gameState.globalInventory[key] || 0;
+                const requiredTier = ITEM_UNLOCK_TIERS[key] || 0;
+                const isUnlocked = gameState.currentTierIdx >= requiredTier;
+
+                const row = document.createElement('div');
+                row.className = `apple-btn p-2 rounded-xl bg-neutral-900/80 border border-white/5 flex items-center justify-between ${isUnlocked ? 'cursor-pointer hover:border-white/20' : 'item-locked'}`;
+                if (isUnlocked) {
+                    row.onclick = () => openLexikonAndFocus(key);
+                }
+
+                row.innerHTML = `
+                    <div class="flex items-center gap-2.5">
+                        <span class="text-base">${isUnlocked ? item.icon : '🔒'}</span>
+                        <span class="text-xs font-medium ${isUnlocked ? 'text-gray-200' : 'text-gray-500'}">${isUnlocked ? item.name : '??? (Gesperrt)'}</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs font-mono font-bold ${isUnlocked ? 'text-white' : 'text-gray-600'}">${isUnlocked ? count : `Tier ${requiredTier + 1}`}</span>
+                    </div>
+                `;
+
+                list.appendChild(row);
+            });
+        }
+
+        function checkQuestGoal() {
+            const currentTier = TIERS[gameState.currentTierIdx];
+            if (!currentTier) return;
+
+            const hasQty = gameState.globalInventory[currentTier.goalItem] || 0;
+            updateQuestUI();
+
+            if (hasQty >= currentTier.goalQty) {
+                if (gameState.currentTierIdx < TIERS.length - 1) {
+                    gameState.currentTierIdx++;
+                    playTone(880, 'sine', 0.25);
+                    showNotification(`Du hast ${currentTier.title} erfolgreich abgeschlossen und neue Gebäude/Rezepte freigeschaltet!`, '🎉 Meilenstein Erreicht!', '🚀');
+                    renderGlobalInventory();
+                    updateQuestUI();
+                }
+            }
+        }
+
+        function updateQuestUI() {
+            const currentTier = TIERS[gameState.currentTierIdx];
+            if (!currentTier) return;
+
+            const hasQty = gameState.globalInventory[currentTier.goalItem] || 0;
+            const itemObj = ITEMS[currentTier.goalItem];
+
+            document.getElementById('tier-subtitle').innerText = currentTier.title;
+            document.getElementById('quest-title').innerText = `Ziel: ${currentTier.goalQty}x ${itemObj ? itemObj.name : currentTier.goalItem} liefern`;
+            document.getElementById('quest-count').innerText = `${Math.min(hasQty, currentTier.goalQty)} / ${currentTier.goalQty}`;
+
+            const percent = Math.min(100, (hasQty / currentTier.goalQty) * 100);
+            document.getElementById('quest-progress-bar').style.width = `${percent}%`;
+        }
+
+        function deliverToHub() {
+            checkQuestGoal();
+            playTone(660, 'sine', 0.12);
+        }
+
+        function switchLevel(lvl) {
+            playTone(520, 'sine', 0.08);
+            gameState.currentLevel = lvl;
+            
+            for (let i = 1; i <= 4; i++) {
+                const btn = document.getElementById(`lvl-btn-${i}`);
+                if (i === lvl) {
+                    btn.className = "px-3 py-1 text-xs rounded-lg font-semibold bg-white text-black transition-all";
+                } else {
+                    btn.className = "px-3 py-1 text-xs rounded-lg font-semibold text-gray-400 hover:text-white transition-all";
+                }
+            }
+
+            document.getElementById('layer-tag-num').innerText = lvl;
+            renderNodesAndConnections();
+        }
+
+        function openInspector(nodeId) {
+            gameState.inspectingNodeId = nodeId;
+            const win = document.getElementById('inspector-window');
+            win.classList.remove('hidden');
+            updateInspectorContent();
+        }
+
+        function closeInspector() {
+            gameState.inspectingNodeId = null;
+            document.getElementById('inspector-window').classList.add('hidden');
+        }
+
+        function updateInspectorContent() {
+            const node = gameState.nodes.find(n => n.id === gameState.inspectingNodeId);
+            if (!node) { closeInspector(); return; }
+
+            const bConfig = BUILDINGS[node.type];
+            document.getElementById('inspector-icon').innerText = bConfig.icon;
+            document.getElementById('inspector-title').innerText = `${bConfig.name} (#${node.id})`;
+
+            const body = document.getElementById('inspector-body');
+            let recipeOptionsHTML = '';
+            let productionRateInfo = '30 Einheiten / Min';
+
+            if (bConfig.type === 'crafter' && node.recipe) {
+                const rec = RECIPES[node.recipe];
+                if (rec) {
+                    const rate = Math.round((60 / rec.time) * (rec.outputQty || 1));
+                    productionRateInfo = `${rate} Einheiten / Min (${rec.outputQty || 1}x in ${rec.time}s)`;
+                }
+            }
+
+            if (bConfig.allowedRecipes) {
+                recipeOptionsHTML = `
+                    <div class="mt-2">
+                        <label class="text-[10px] text-gray-400 uppercase font-semibold">Aktive Rezeptur</label>
+                        <select onchange="changeNodeRecipe(${node.id}, this.value)" class="w-full mt-1 bg-neutral-800 border border-white/10 text-white rounded-lg p-1.5 text-xs">
+                            ${bConfig.allowedRecipes.map(rKey => {
+                                const r = RECIPES[rKey];
+                                const isUnlocked = gameState.currentTierIdx >= r.unlockTier;
+                                return `<option value="${rKey}" ${node.recipe === rKey ? 'selected' : ''} ${!isUnlocked ? 'disabled' : ''}>${isUnlocked ? r.name : '🔒 ??? (Gesperrt)'}</option>`;
+                            }).join('')}
+                        </select>
+                    </div>
+                `;
+            }
+
+            let bufferHTML = '';
+            Object.keys(node.buffer).forEach(k => {
+                bufferHTML += `<div class="flex justify-between py-0.5"><span class="text-gray-400">${ITEMS[k] ? ITEMS[k].name : k}:</span><span class="font-mono font-bold">${node.buffer[k]}</span></div>`;
+            });
+
+            body.innerHTML = `
+                <div class="bg-neutral-900/80 p-2.5 rounded-xl border border-white/5 space-y-1.5">
+                    <div class="flex justify-between"><span class="text-gray-400">Ebene:</span><span class="font-bold">${node.level}</span></div>
+                    <div class="flex justify-between"><span class="text-gray-400">Produktionsrate:</span><span class="text-blue-400 font-mono font-bold">${productionRateInfo}</span></div>
+                    <div class="flex justify-between"><span class="text-gray-400">Status:</span><span class="text-green-400 font-semibold">Aktiv ⚡</span></div>
+                </div>
+
+                ${recipeOptionsHTML}
+
+                <div class="bg-neutral-900/80 p-2.5 rounded-xl border border-white/5">
+                    <div class="text-[10px] text-gray-400 uppercase font-semibold mb-1">Eingangs-Puffer (Füllstand)</div>
+                    ${bufferHTML || '<span class="text-gray-500 italic">Keine Rohstoffe gelagert</span>'}
+                </div>
+
+                <button onclick="deleteNode(${node.id})" class="w-full apple-btn py-2 bg-red-950/50 hover:bg-red-900/60 border border-red-500/30 text-red-300 rounded-xl font-semibold text-xs">
+                    Gebäude Abreißen ✕
+                </button>
+            `;
+        }
+
+        function changeNodeRecipe(nodeId, recipeKey) {
+            const node = gameState.nodes.find(n => n.id === nodeId);
+            if (node) {
+                node.recipe = recipeKey;
+                node.buffer = {};
+                node.progress = 0;
+                playTone(500, 'sine', 0.08);
+            }
+        }
+
+        function toggleLexikon() {
+            const win = document.getElementById('lexikon-window');
+            win.classList.toggle('hidden');
+            if (!win.classList.contains('hidden')) renderLexikonContent();
+        }
+
+        function openLexikonAndFocus(itemKey) {
+            document.getElementById('lexikon-window').classList.remove('hidden');
+            renderLexikonContent(itemKey);
+        }
+
+        function renderLexikonContent(highlightKey = null) {
+            const container = document.getElementById('lexikon-content');
+            container.innerHTML = '';
+
+            const infoBox = document.createElement('div');
+            infoBox.className = "p-3 rounded-xl bg-blue-950/40 border border-blue-500/20 text-xs text-blue-200 space-y-1 mb-2";
+            infoBox.innerHTML = `
+                <div class="font-bold mb-1">🏗️ Gebäudetypen Übersicht:</div>
+                <div>🔥 <b>Schmelze:</b> Schmilzt Erze + Kohle zu reinen Barren.</div>
+                <div>🏭 <b>Fabrik:</b> Baut einfache Komponenten (Draht, Schaltkreise).</div>
+                <div>🔬 <b>Präzisions-Manufaktur:</b> Baut schwere Rahmen & Quanten-Prozessoren.</div>
+            `;
+            container.appendChild(infoBox);
+
+            Object.keys(RECIPES).forEach(rKey => {
+                const rec = RECIPES[rKey];
+                const bReq = BUILDINGS[rec.building];
+                const isUnlocked = gameState.currentTierIdx >= rec.unlockTier;
+
+                const card = document.createElement('div');
+                card.className = `p-3 rounded-xl bg-neutral-900 border ${rKey === highlightKey ? 'border-blue-500 ring-1 ring-blue-500' : 'border-white/10'} space-y-2 ${!isUnlocked ? 'opacity-40 grayscale' : ''}`;
+
+                if (!isUnlocked) {
+                    card.innerHTML = `
+                        <div class="flex justify-between items-center text-gray-500">
+                            <span class="font-bold text-xs">🔒 ??? (Freischaltung in Tier ${rec.unlockTier + 1})</span>
+                            <span class="text-[10px] bg-neutral-800 px-2 py-0.5 rounded border border-white/5">Gesperrt</span>
+                        </div>
+                    `;
+                } else {
+                    let inputsList = Object.keys(rec.inputs).map(ik => {
+                        return `<span class="px-2 py-0.5 bg-neutral-800 rounded border border-white/5">${ITEMS[ik].icon} ${rec.inputs[ik]}x ${ITEMS[ik].name}</span>`;
+                    }).join(' + ');
+
+                    const ratePerMin = Math.round((60 / rec.time) * (rec.outputQty || 1));
+
+                    card.innerHTML = `
+                        <div class="flex justify-between items-center">
+                            <div class="font-bold text-xs text-white flex items-center gap-1.5">
+                                <span>${ITEMS[rKey].icon}</span>
+                                <span>${rec.name}</span>
+                            </div>
+                            <span class="text-[10px] text-blue-400 bg-blue-950/80 px-2 py-0.5 rounded-full border border-blue-500/20 font-mono font-semibold">⚡ ${ratePerMin} / Min</span>
+                        </div>
+                        <div class="text-[11px] text-gray-300 flex items-center gap-1 flex-wrap">
+                            ${inputsList} ➔ <span class="font-bold text-white">${ITEMS[rKey].icon} ${rec.outputQty || 1}x ${rec.name}</span>
+                        </div>
+                        <div class="text-[10px] text-gray-400 flex items-center gap-1">
+                            <span>Herstellungsort:</span>
+                            <span class="font-semibold text-gray-200">${bReq.icon} ${bReq.name}</span>
+                        </div>
+                    `;
+                }
+
+                container.appendChild(card);
+            });
+        }
+
+        function setupWindowDragging(windowId, headerId) {
+            const win = document.getElementById(windowId);
+            const header = document.getElementById(headerId);
+
+            let isDragging = false;
+            let offsetX = 0, offsetY = 0;
+
+            header.addEventListener('mousedown', (e) => {
+                isDragging = true;
+                win.style.right = 'auto'; // Clear static right anchor
+                offsetX = e.clientX - win.offsetLeft;
+                offsetY = e.clientY - win.offsetTop;
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (isDragging) {
+                    win.style.left = `${e.clientX - offsetX}px`;
+                    win.style.top = `${e.clientY - offsetY}px`;
+                }
+            });
+
+            document.addEventListener('mouseup', () => {
+                isDragging = false;
+            });
+        }
+    </script>
 </body>
 </html>
